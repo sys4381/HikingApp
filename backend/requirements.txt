@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+gpxpy
+requests
+geopy
+pykml
+lxml
+pydantic

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HikingApp Explorer</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React 18 -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- App Code -->
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const API_BASE = "http://localhost:8000/api";
+
+        function App() {
+            const [directory, setDirectory] = useState("");
+            const [activeDirectory, setActiveDirectory] = useState("");
+            const [ingestStatus, setIngestStatus] = useState("");
+            const [groups, setGroups] = useState([]);
+            const [selectedGroup, setSelectedGroup] = useState(null);
+            const [trails, setTrails] = useState([]);
+            
+            // Fetch Groups
+            useEffect(() => {
+                fetchGroups(activeDirectory);
+            }, [activeDirectory]);
+
+            const fetchGroups = async (dirToFetch = "") => {
+                try {
+                    const url = dirToFetch ? `${API_BASE}/groups?directory=${encodeURIComponent(dirToFetch)}` : `${API_BASE}/groups`;
+                    const res = await fetch(url);
+                    if (res.ok) {
+                        const data = await res.json();
+                        setGroups(data);
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            };
+
+            const handleIngest = async (e) => {
+                e.preventDefault();
+                setIngestStatus("Loading...");
+                const targetDir = directory;
+                setActiveDirectory(targetDir);
+                
+                setGroups([]);
+                setSelectedGroup(null);
+                setTrails([]);
+                try {
+                    const res = await fetch(`${API_BASE}/ingest`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ directory_path: directory })
+                    });
+                    const data = await res.json();
+                    setIngestStatus(data.message || "Failed");
+                    if (data.message) {
+                        // Poll for groups every 2s, 5 times or until increased
+                        let attempts = 0;
+                        const i = setInterval(() => {
+                            fetchGroups(targetDir);
+                            attempts++;
+                            if (attempts > 10) clearInterval(i);
+                        }, 2000);
+                    }
+                } catch (e) {
+                    setIngestStatus("Error triggering ingest");
+                }
+            };
+
+            const selectGroup = async (group) => {
+                setSelectedGroup(group);
+                try {
+                    const url = activeDirectory ? `${API_BASE}/groups/${group.id}/trails?directory=${encodeURIComponent(activeDirectory)}` : `${API_BASE}/groups/${group.id}/trails`;
+                    const res = await fetch(url);
+                    if (res.ok) {
+                        const data = await res.json();
+                        setTrails(data);
+                    }
+                } catch (e) {
+                    console.error("Failed to fetch trails", e);
+                }
+            };
+
+            return (
+                <div className="app-container">
+                    <header className="header">
+                        <h1>🏞️ Hiking Explorer</h1>
+                        <form className="ingest-form" onSubmit={handleIngest}>
+                            <input 
+                                type="text" 
+                                placeholder="Path to GPX folder (e.g. C:\Hiking)"
+                                value={directory}
+                                onChange={(e) => setDirectory(e.target.value)}
+                                required
+                            />
+                            <button type="submit">Ingest</button>
+                            {ingestStatus && <span className="status-text">{ingestStatus}</span>}
+                        </form>
+                    </header>
+                    
+                    <main className="main-content">
+                        <aside className="sidebar">
+                            <h2>Trail Groups ({groups.length})</h2>
+                            <ul className="group-list">
+                                {groups.map(g => (
+                                    <li 
+                                        key={g.id} 
+                                        className={`group-card ${selectedGroup?.id === g.id ? 'active' : ''}`}
+                                        onClick={() => selectGroup(g)}
+                                    >
+                                        <div className="group-info">
+                                            <span className="group-title">Lat: {g.center_lat.toFixed(3)}, Lon: {g.center_lon.toFixed(3)}</span>
+                                            <span className="group-count">{g.trail_count} Trails</span>
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        </aside>
+                        <div className="map-area">
+                            {selectedGroup ? (
+                                <MapViewer group={selectedGroup} trails={trails} />
+                            ) : (
+                                <div className="empty-state">Select a group to view trails</div>
+                            )}
+                        </div>
+
+                        {selectedGroup && (
+                            <aside className="details-panel">
+                                <h2>Trails in Group ({trails.length})</h2>
+                                <div className="trail-list">
+                                    {trails.map((t, index) => {
+                                        const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b49a', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#f43f5e'];
+                                        const tColor = colors[index % colors.length];
+                                        return (
+                                        <div key={t.id} className="trail-detail-card" style={{ borderLeft: `4px solid ${tColor}` }}>
+                                            <h3><span className="walk-number" style={{ backgroundColor: tColor }}>{index + 1}</span> <span style={{ color: tColor }}>{t.name}</span></h3>
+                                            <div className="trail-stats">
+                                                <div className="stat-row"><span>Type:</span> <span>{t.is_loop ? 'Circular 🔁' : 'Linear ➡️'}</span></div>
+                                                <div className="stat-row"><span>Length:</span> <span>{t.length_km.toFixed(1)} km</span></div>
+                                                <div className="stat-row"><span>Elevation:</span> <span>{Math.round(t.elevation_gain_m || 0)} m</span></div>
+                                                <div className="stat-row"><span>Difficulty:</span> <span className={`diff-${t.difficulty_category ? t.difficulty_category.toLowerCase().split(' ')[0] : 'easy'}`}>{t.difficulty_category}</span></div>
+                                                <div className="stat-row"><span>File Name:</span> <span title={t.file_path}>{t.file_path ? t.file_path.split(/[\\/]/).pop() : 'Unknown'}</span></div>
+                                                <div className="stat-row"><span>Start Location:</span> <span>{t.start_lat.toFixed(4)}, {t.start_lon.toFixed(4)}</span></div>
+                                                <div className="stat-row"><span>End Location:</span> <span>{t.end_lat.toFixed(4)}, {t.end_lon.toFixed(4)}</span></div>
+                                            </div>
+                                        </div>
+                                    )})}
+                                </div>
+                            </aside>
+                        )}
+                    </main>
+                </div>
+            );
+        }
+
+        // Map Component
+        function MapViewer({ group, trails }) {
+            const mapRef = useRef(null);
+            const mapInstance = useRef(null);
+            const layerGroup = useRef(null);
+
+            useEffect(() => {
+                if (!mapInstance.current && mapRef.current) {
+                    mapInstance.current = L.map(mapRef.current).setView([group.center_lat, group.center_lon], 11);
+                    
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        maxZoom: 19,
+                        attribution: '© OpenStreetMap'
+                    }).addTo(mapInstance.current);
+
+                    layerGroup.current = L.featureGroup().addTo(mapInstance.current);
+                }
+
+                return () => {
+                    if (mapInstance.current) {
+                        mapInstance.current.remove();
+                        mapInstance.current = null;
+                        layerGroup.current = null;
+                    }
+                };
+            }, []);
+
+            // Update markers and polylines when trails change
+            useEffect(() => {
+                if (!layerGroup.current || !mapInstance.current) return;
+                
+                layerGroup.current.clearLayers();
+                
+                const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b49a', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#f43f5e'];
+                
+                trails.forEach((t, index) => {
+                    const walkNumber = index + 1;
+                    const tColor = colors[index % colors.length];
+                    
+                    // Draw Polyline if available
+                    if (t.polyline) {
+                        try {
+                            const latlngs = JSON.parse(t.polyline);
+                            const line = L.polyline(latlngs, {
+                                color: tColor, 
+                                weight: 4,
+                                opacity: 0.8
+                            }).addTo(layerGroup.current);
+                            
+                            line.bindPopup(`<b>#${walkNumber} - ${t.name}</b><br/>${t.length_km.toFixed(1)} km<br/>Gain: ${Math.round(t.elevation_gain_m || 0)}m<br/>${t.difficulty_category || 'N/A'}`);
+                            
+                            // Start marker with Walk Number
+                            const startIcon = L.divIcon({
+                                className: 'trail-number-icon',
+                                html: `<div style="background-color: ${tColor};">${walkNumber}</div>`,
+                                iconSize: [24, 24],
+                                iconAnchor: [12, 12]
+                            });
+                            if (latlngs.length > 0) {
+                                L.marker(latlngs[0], { icon: startIcon }).addTo(layerGroup.current)
+                                 .bindPopup(`<b>#${walkNumber} - ${t.name} Start</b>`);
+                            }
+                        } catch (e) {
+                            console.error("Invalid polyline JSON", e);
+                        }
+                    } else {
+                        // Fallback marker for start point
+                        const fallbackIcon = L.divIcon({
+                            className: 'trail-number-icon',
+                            html: `<div style="background-color: ${tColor};">${walkNumber}</div>`,
+                            iconSize: [24, 24],
+                            iconAnchor: [12, 12]
+                        });
+                        L.marker([t.start_lat, t.start_lon], { icon: fallbackIcon }).addTo(layerGroup.current)
+                            .bindPopup(`<b>#${walkNumber} - ${t.name}</b><br/>${t.length_km.toFixed(1)} km`);
+                    }
+                });
+                
+                // Fit bounds
+                if (trails.length > 0 && layerGroup.current.getLayers().length > 0) {
+                    mapInstance.current.fitBounds(layerGroup.current.getBounds(), { padding: [50, 50] });
+                } else {
+                    mapInstance.current.setView([group.center_lat, group.center_lon], 11);
+                }
+                
+            }, [trails, group]);
+
+            return (
+                <div className="map-wrapper">
+                    <div className="map-container" ref={mapRef}></div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
